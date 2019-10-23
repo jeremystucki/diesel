@@ -35,14 +35,14 @@ pub trait TransactionManager<Conn: Connection> {
     fn get_transaction_depth(&self) -> u32;
 }
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 /// An implementation of `TransactionManager` which can be used for backends
 /// which use ANSI standard syntax for savepoints such as SQLite and PostgreSQL.
 #[allow(missing_debug_implementations)]
 #[derive(Default)]
 pub struct AnsiTransactionManager {
-    transaction_depth: Cell<i32>,
+    transaction_depth: AtomicI32,
 }
 
 impl AnsiTransactionManager {
@@ -53,8 +53,7 @@ impl AnsiTransactionManager {
 
     fn change_transaction_depth(&self, by: i32, query: QueryResult<()>) -> QueryResult<()> {
         if query.is_ok() {
-            self.transaction_depth
-                .set(self.transaction_depth.get() + by)
+            self.transaction_depth.fetch_add(by, Ordering::SeqCst);
         }
         query
     }
@@ -70,7 +69,7 @@ impl AnsiTransactionManager {
     {
         use result::Error::AlreadyInTransaction;
 
-        if self.transaction_depth.get() == 0 {
+        if self.transaction_depth.load(Ordering::SeqCst) == 0 {
             self.change_transaction_depth(1, conn.batch_execute(sql))
         } else {
             Err(AlreadyInTransaction)
@@ -84,7 +83,7 @@ where
     Conn::Backend: UsesAnsiSavepointSyntax,
 {
     fn begin_transaction(&self, conn: &Conn) -> QueryResult<()> {
-        let transaction_depth = self.transaction_depth.get();
+        let transaction_depth = self.transaction_depth.load(Ordering::SeqCst);
         self.change_transaction_depth(
             1,
             if transaction_depth == 0 {
@@ -96,7 +95,7 @@ where
     }
 
     fn rollback_transaction(&self, conn: &Conn) -> QueryResult<()> {
-        let transaction_depth = self.transaction_depth.get();
+        let transaction_depth = self.transaction_depth.load(Ordering::SeqCst);
         self.change_transaction_depth(
             -1,
             if transaction_depth == 1 {
@@ -111,7 +110,7 @@ where
     }
 
     fn commit_transaction(&self, conn: &Conn) -> QueryResult<()> {
-        let transaction_depth = self.transaction_depth.get();
+        let transaction_depth = self.transaction_depth.load(Ordering::SeqCst);
         self.change_transaction_depth(
             -1,
             if transaction_depth <= 1 {
@@ -126,6 +125,6 @@ where
     }
 
     fn get_transaction_depth(&self) -> u32 {
-        self.transaction_depth.get() as u32
+        self.transaction_depth.load(Ordering::SeqCst) as u32
     }
 }
